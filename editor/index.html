@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui;color:#273244;background:white}
+button{cursor:pointer;border:1px solid #cbd2dc;border-radius:6px;padding:8px 10px;background:#fff;color:#273244;font-weight:650;font-size:12px}
+button:hover{background:#edf2fc}button:focus-visible{outline:3px solid #20429b}
+.toolbar{display:flex;gap:6px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid #e0e4eb}
+.font-control{display:flex;align-items:center;gap:5px;font-size:12px}.font-control input[type=number]{width:58px;padding:6px;border:1px solid #cbd2dc;border-radius:5px}.font-control input[type=color]{width:34px;height:30px;padding:2px;border:1px solid #cbd2dc;border-radius:5px}
+.help{font-size:13px;color:#647184;margin:8px 0}#status{font-size:13px;min-height:22px;color:#20429b}
+.workspace{display:grid;grid-template-columns:minmax(260px,.8fr) minmax(420px,1.3fr);gap:18px;margin-top:8px}
+h3{font-size:14px;margin:8px 0}.pane{min-width:0}
+#editor{height:740px;overflow:auto;border:1px solid #b7c1cf;border-radius:8px;padding:16px;outline:none;font-family:Article;font-size:22px;line-height:1.6;color:black}
+#editor:focus{border-color:#20429b}#editor:empty:before{content:'Paste the weekly rasi article here. Rasi names and subsection headings are detected automatically.';font-family:system-ui;font-size:15px;color:#647184}
+#editor p{margin:0 0 14px;text-align:justify}#editor h1{font-size:28px;text-align:center}#editor h2{font-size:24px;color:#20429b}#editor li{margin-bottom:10px}#editor ul li::marker{color:#9f4932}
+#preview{height:740px;overflow:auto;border:1px solid #cbd2dc;border-radius:8px;background:#e9edf3;padding:14px;scrollbar-gutter:stable}
+.sheet{position:relative;width:100%;aspect-ratio:612/792;background:white;box-shadow:0 3px 14px #16243b22;margin-bottom:18px}
+.sheet img{display:block;width:100%;height:100%}.page-label{font-size:12px;color:#647184;margin:4px 0}
+.hit{position:absolute;background:transparent;padding:0;border:1px solid transparent;border-radius:0;color:transparent;min-height:12px}
+.hit:hover,.hit:focus{border-color:#20429b;background:#20429b0b}.pending .hit{pointer-events:none}
+.preview-edit{position:absolute;background:#fff;z-index:3;color:#000;outline:2px solid #20429b;padding:0;overflow:auto;font-family:Article;white-space:normal;box-shadow:0 3px 12px #16345722}
+.preview-edit p,.preview-edit div{margin:0}.preview-edit.subheading{color:#20429b}
+#generate{background:#20429b;color:white;border:0;padding:10px 20px;margin-left:auto}
+#error{display:none;padding:12px;background:#fff0ef;border:1px solid #edb6b0;border-radius:6px;color:#923a30;margin:8px 0;font-size:14px}
+@media(max-width:850px){.workspace{grid-template-columns:1fr 1fr;gap:10px}#editor{font-size:19px}}
+</style></head><body>
+<div class="help">Paste your article to see live PDF pages. Double-click text on a page to edit it. Shift+Enter adds a line break.</div>
+<div class="toolbar" role="toolbar" aria-label="Article and preview formatting">
+<button data-command="heading">HEADING</button><button data-command="subheading">SUBHEADING</button>
+<button data-command="bullet">• BULLET</button><button data-command="number">1. NUMBER</button>
+<button data-command="bold">BOLD</button><button data-command="clear">CLEAR</button>
+<button data-command="left">LEFT</button><button data-command="center">CENTER</button><button data-command="right">RIGHT</button><button data-command="justify">JUSTIFY</button>
+<button data-command="break">LINE BREAK</button>
+<label class="font-control">Size (pt)<input id="font-size" type="number" min="8" max="96" step="1" value="22" aria-label="Font size in points"></label><button id="apply-size">APPLY SIZE</button>
+<label class="font-control">Text color<input id="text-color" type="color" value="#000000" aria-label="Text color"></label><button id="apply-color">APPLY COLOR</button>
+<label class="font-control">Link<input id="text-link" type="text" placeholder="https:// or mailto:" aria-label="Text link URL"></label><button id="apply-link">APPLY LINK</button><button id="remove-link">REMOVE LINK</button>
+<span class="help">Size applies to the paragraph. Color applies to selected text, or the paragraph if nothing is selected.</span><button id="refresh-preview">REFRESH PREVIEW</button><button id="generate">PREPARE SELECTED PDFS</button>
+</div>
+<div id="status" aria-live="polite">Preparing page preview…</div><div id="error" role="alert"></div>
+<div class="workspace"><section class="pane"><h3>Article</h3><div id="editor" contenteditable="true" role="textbox" aria-label="Article content" aria-multiline="true" spellcheck="false"></div></section>
+<section class="pane"><h3>Live PDF preview · double-click text to edit</h3><div id="preview" aria-label="Live PDF pages"></div></section></div>
+<script>
+const editor=document.getElementById('editor'),preview=document.getElementById('preview');
+let initialized=false,request=null,refreshRequest=null,autoPreview=true,revision='initial',selection=null,timer=null,active=null,lastPages=[],lastContext=null;
+const send=(type,extra={})=>window.parent.postMessage({isStreamlitMessage:true,type,...extra},'*');
+let defaultAlign='justify';
+const uuid=()=>crypto.randomUUID();
+function hexColor(value){
+ if(/^#[0-9a-f]{6}$/i.test(value))return value.toLowerCase();
+ const rgb=value.match(/^rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)$/);
+ return rgb?'#'+rgb.slice(1).map(n=>Number(n).toString(16).padStart(2,'0')).join(''):null;
+}
+function runsFor(node,bold=false,out=[],color=null,href=null){
+ if(node.nodeType===Node.TEXT_NODE){out.push({text:node.textContent,bold,...(color?{color}:{}),...(href?{href}:{})});return out;}
+ if(node.nodeType!==Node.ELEMENT_NODE)return out;
+ const strong=bold||['B','STRONG'].includes(node.tagName)||Number(node.style.fontWeight)>=600;
+ if(node.tagName==='A')href=node.getAttribute('href')||href;
+ if(['SPAN','FONT','B','STRONG','I','EM','A'].includes(node.tagName))color=hexColor(node.style.color||node.getAttribute('color')||'')||color;
+ if(node.tagName==='BR'){out.push({text:'\n',bold:strong});return out;}
+ for(const child of node.childNodes){
+  if(child.nodeType===Node.ELEMENT_NODE&&['P','DIV'].includes(child.tagName)&&out.length&& !out.at(-1).text.endsWith('\n'))out.push({text:'\n',bold:strong});
+  runsFor(child,strong,out,color,href);
+ }return out;
+}
+function blocks(){
+ const out=[];
+ function add(node,type='body',number=1,inherited=''){
+  const runs=runsFor(node),text=runs.map(r=>r.text).join('');
+  const align=node.nodeType===Node.ELEMENT_NODE?node.style.textAlign||inherited:inherited;
+  const style={};if(node.nodeType===Node.ELEMENT_NODE&&node.dataset.alignExplicit==='true')style.align_explicit=true;
+  if(node.nodeType===Node.ELEMENT_NODE){
+   if(node.dataset.fontSize)style.font_size=Number(node.dataset.fontSize);
+   if(node.dataset.textColor)style.color=node.dataset.textColor;
+  }
+  if(text.trim())out.push({type,text,runs,number,align:align||defaultAlign,...style});
+ }
+ function visit(node){
+  if(node.nodeType===Node.TEXT_NODE){add(node);return;}
+  if(node.nodeType!==Node.ELEMENT_NODE)return;
+  if(['UL','OL'].includes(node.tagName)){
+   let number=Number(node.getAttribute('start'))||1;
+   for(const item of node.children){
+    if(item.tagName!=='LI')continue;
+    if(item.hasAttribute('value'))number=Number(item.getAttribute('value'));
+    const clone=item.cloneNode(true);clone.querySelectorAll('ul,ol').forEach(n=>n.remove());
+    const heading=clone.querySelector('h1,h2,h3,h4,h5,h6');
+    if(heading){
+     if(node.tagName==='OL')clone.insertBefore(document.createTextNode(`${number}. `),clone.firstChild);
+     add(clone,heading.tagName==='H1'?'heading':'subheading',number,node.style.textAlign);
+    }else add(clone,node.tagName==='UL'?'bullet':'number',number,node.style.textAlign);
+    number++;
+    for(const nested of item.children)if(['UL','OL'].includes(nested.tagName))visit(nested);
+   }return;
+  }
+  if(['H1','H2','H3','H4','H5','H6'].includes(node.tagName)){
+   const list=node.querySelector('ol');
+   if(list){
+    let number=Number(list.getAttribute('start'))||1;
+    for(const item of list.children){
+     if(item.tagName!=='LI')continue;
+     if(item.hasAttribute('value'))number=Number(item.getAttribute('value'));
+     const clone=item.cloneNode(true);clone.insertBefore(document.createTextNode(`${number}. `),clone.firstChild);
+     add(clone,node.tagName==='H1'?'heading':'subheading',number++,node.style.textAlign);
+    }
+   }else add(node,node.tagName==='H1'?'heading':'subheading');return;
+  }
+  if(['DIV','P'].includes(node.tagName)&&[...node.children].some(c=>['DIV','P','H1','H2','UL','OL'].includes(c.tagName))){
+   for(const child of node.childNodes)visit(child);return;
+  }add(node);
+ }
+ let inline=document.createElement('p');
+ function flush(){if(inline.childNodes.length)add(inline);inline=document.createElement('p');}
+ for(const child of editor.childNodes){
+  if(child.nodeType===Node.ELEMENT_NODE&&['DIV','P','H1','H2','H3','UL','OL'].includes(child.tagName)){flush();visit(child);}
+  else inline.appendChild(child.cloneNode(true));
+ }flush();return out;
+}
+function appendRuns(node,runs){
+ for(const run of runs){
+  const span=document.createElement(run.bold?'b':'span');
+  if(run.color)span.style.color=run.color;
+  run.text.split('\n').forEach((text,index)=>{if(index)span.appendChild(document.createElement('br'));span.appendChild(document.createTextNode(text));});if(run.href){const a=document.createElement("a");a.href=run.href;a.appendChild(span);node.appendChild(a)}else node.appendChild(span);
+ }
+}
+function restore(items){
+ editor.replaceChildren();
+ for(const item of items||[]){
+  let node=document.createElement(item.type==='heading'?'h1':item.type==='subheading'?'h2':'p');
+  node.style.textAlign=item.align_explicit?item.align:defaultAlign;
+  if(item.align_explicit)node.dataset.alignExplicit='true';
+  if(item.font_size){node.dataset.fontSize=item.font_size;node.style.fontSize=item.font_size+'px';}
+  if(item.color){node.dataset.textColor=item.color;node.style.color=item.color;}
+  appendRuns(node,item.runs||[{text:item.text||'',bold:false}]);
+  if(['bullet','number'].includes(item.type)){
+   const list=document.createElement(item.type==='bullet'?'ul':'ol');if(item.type==='number')list.start=item.number||1;
+   const li=document.createElement('li');li.style.textAlign=node.style.textAlign;if(item.align_explicit)li.dataset.alignExplicit='true';
+   if(item.font_size){li.dataset.fontSize=item.font_size;li.style.fontSize=item.font_size+'px';}
+   if(item.color){li.dataset.textColor=item.color;li.style.color=item.color;}
+   while(node.firstChild)li.appendChild(node.firstChild);list.appendChild(li);node=list;
+  }editor.appendChild(node);
+ }
+}
+function publish(){send('streamlit:setComponentValue',{value:{blocks:blocks(),request,refresh_request:refreshRequest,revision,initial_token:window.initialToken},dataType:'json'});}
+function markChanged(){revision=uuid();preview.classList.add('pending');document.getElementById('status').textContent=autoPreview?'Updating live PDF…':'Preview out of date — click REFRESH PREVIEW';}
+function persist(){markChanged();clearTimeout(timer);timer=setTimeout(publish,400);}
+editor.addEventListener('input',persist);
+document.addEventListener('selectionchange',()=>{
+ const s=window.getSelection();const target=active?.node||editor;
+ if(s.rangeCount&&target.contains(s.anchorNode))selection=s.getRangeAt(0).cloneRange();
+});
+function syncPreview(allowEmpty=false){
+ if(!active)return;
+ const runs=runsFor(active.node),text=runs.map(r=>r.text).join('');
+ if(!text.trim()&&!allowEmpty)return;
+ const items=blocks(),item=items[active.index];if(!item)return;
+ item.runs=runs;item.text=text;item.align=active.node.style.textAlign||item.align;if(active.node.dataset.alignExplicit==='true')item.align_explicit=true;
+ if(active.node.dataset.fontSize)item.font_size=Number(active.node.dataset.fontSize);
+ if(active.node.dataset.textColor)item.color=active.node.dataset.textColor;
+ if(active.meta.type==='heading'&&active.meta.page===0)item.type='heading';
+ restore(items);markChanged();
+}
+function commitPreview(){
+ if(!active)return;
+ clearTimeout(timer);syncPreview(true);const node=active.node;active=null;node.remove();publish();
+}
+function beginPreviewEdit(meta,stage){
+ if(preview.classList.contains('pending'))return;
+ if(active)commitPreview();
+ const item=blocks()[meta.source_index];if(!item)return;
+ const node=document.createElement('div');node.className=`preview-edit ${meta.type}`;
+ node.contentEditable='true';node.spellcheck=false;node.setAttribute('role','textbox');node.setAttribute('aria-label','Edit text on PDF page');
+ const [x0,y0,x1,y1]=meta.rect,scale=stage.clientWidth/612;
+ node.style.left=x0/612*100+'%';node.style.top=y0/792*100+'%';node.style.width=(x1-x0)/612*100+'%';
+ node.style.maxHeight=(meta.page===0?758-y0:690-y0)/792*stage.clientHeight+'px';
+ node.style.minHeight=Math.max(35,(y1-y0)*scale)+'px';
+ node.style.fontSize=(meta.font_size||22)*scale+'px';
+ node.style.lineHeight=(meta.line_height||27)*scale+'px';node.style.textAlign=meta.align||item.align||defaultAlign;if(item.align_explicit)node.dataset.alignExplicit='true';
+ node.style.color=item.color||meta.color||'#000';
+ if(item.font_size)node.dataset.fontSize=item.font_size;
+ if(item.color){node.dataset.textColor=item.color;node.style.color=item.color;}
+ appendRuns(node,item.runs||[{text:item.text,bold:false}]);stage.appendChild(node);
+ active={node,index:meta.source_index,meta,stage};
+ node.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(()=>{syncPreview();publish();},400);});
+ node.addEventListener('blur',event=>{
+  if(event.relatedTarget&&document.querySelector('.toolbar').contains(event.relatedTarget))return;
+  if(active?.node===node)commitPreview();
+ });
+ node.addEventListener('keydown',event=>{
+  if(event.key==='Escape'){event.preventDefault();node.blur();}
+  if(event.key==='Enter'&&event.shiftKey){event.preventDefault();document.execCommand('insertLineBreak');node.dispatchEvent(new Event('input'));}
+ });
+ node.focus();selection=null;
+}
+function renderPages(pages){
+ lastPages=pages;
+ // Reuse page containers so preview edits and scroll positions survive updates.
+ pages.forEach((page,index)=>{
+  let wrapper=preview.querySelector(`[data-page="${index}"]`);
+  if(!wrapper){wrapper=document.createElement('div');wrapper.dataset.page=index;wrapper.innerHTML='<div class="page-label"></div><div class="sheet"><img alt="PDF page"><div class="hits"></div></div>';preview.appendChild(wrapper);}
+  wrapper.querySelector('.page-label').textContent=page.label||`Page-${index+1}`;
+  wrapper.querySelector('img').src='data:image/png;base64,'+page.image;
+  const stage=wrapper.querySelector('.sheet'),hits=wrapper.querySelector('.hits');hits.replaceChildren();
+  for(const meta of page.placements){
+   const hit=document.createElement('button');hit.className='hit';hit.dataset.sourceIndex=meta.source_index;
+   const [x0,y0,x1,y1]=meta.rect;hit.style.left=x0/612*100+'%';hit.style.top=y0/792*100+'%';
+   hit.style.width=(x1-x0)/612*100+'%';hit.style.height=(y1-y0)/792*100+'%';
+   hit.setAttribute('aria-label',`Edit ${meta.type} on page ${index+1}`);hit.title='Double-click to edit this text';
+   hit.addEventListener('dblclick',()=>beginPreviewEdit(meta,stage));hits.appendChild(hit);
+  }
+ });
+ [...preview.querySelectorAll('[data-page]')].forEach(wrapper=>{
+  if(Number(wrapper.dataset.page)>=pages.length&&!wrapper.contains(active?.node))wrapper.remove();
+ });
+}
+function styleTargets(){
+ if(active)return [active.node];
+ let candidates=[...editor.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li')];
+ if(!candidates.length&&editor.textContent.trim()){
+  const paragraph=document.createElement('p');while(editor.firstChild)paragraph.appendChild(editor.firstChild);editor.appendChild(paragraph);return [paragraph];
+ }
+ const current=window.getSelection();
+ const range=selection||(current.rangeCount?current.getRangeAt(0):null);
+ if(!range)return candidates.slice(0,1);
+ return [...new Set(candidates.filter(node=>range.intersectsNode(node)).map(node=>node.closest('li')||node))];
+}
+function applyFontStyle(property,value){
+ const target=active?.node||editor;target.focus();
+ if(selection&&target.contains(selection.startContainer)){
+  const s=window.getSelection();s.removeAllRanges();s.addRange(selection);
+ }
+ if(property==='color'&&!window.getSelection().isCollapsed&&target.contains(window.getSelection().anchorNode)){
+  document.execCommand('styleWithCSS',false,true);document.execCommand('foreColor',false,value);
+  if(active)syncPreview();else markChanged();clearTimeout(timer);publish();return;
+ }
+ for(const node of styleTargets()){
+  if(property==='font_size'){
+   node.dataset.fontSize=value;const scale=active?active.stage.clientWidth/612:1;
+   node.style.fontSize=value*scale+'px';
+   if(active){const baseline=27/22;node.style.lineHeight=value*baseline*scale+'px';}
+  }else{node.dataset.textColor=value;node.style.color=value;}
+ }
+ if(active)syncPreview();else markChanged();clearTimeout(timer);publish();
+}
+for(const id of ['apply-size','apply-color'])document.getElementById(id).addEventListener('mousedown',event=>event.preventDefault());
+document.getElementById('apply-size').addEventListener('click',()=>{
+ const input=document.getElementById('font-size');if(input.reportValidity())applyFontStyle('font_size',Number(input.value));
+});
+document.getElementById('apply-color').addEventListener('click',()=>applyFontStyle('color',document.getElementById('text-color').value));
+for(const id of ['apply-link','remove-link']){
+ document.getElementById(id).addEventListener('mousedown',event=>event.preventDefault());
+ document.getElementById(id).addEventListener('click',()=>{
+  const target=active?.node||editor;target.focus();
+  if(selection&&target.contains(selection.startContainer)){const s=window.getSelection();s.removeAllRanges();s.addRange(selection);}
+  if(window.getSelection().isCollapsed){document.getElementById('status').textContent='Select the text to link first.';return;}
+  const href=document.getElementById('text-link').value.trim();
+  if(id==='apply-link'&&!/^(https?:\/\/|mailto:)/i.test(href)){document.getElementById('status').textContent='Use an https://, http:// or mailto: link.';return;}
+  document.execCommand(id==='apply-link'?'createLink':'unlink',false,href);
+  if(active)syncPreview();else markChanged();clearTimeout(timer);publish();
+ });
+}
+
+document.querySelectorAll('[data-command]').forEach(button=>{
+ button.addEventListener('mousedown',event=>event.preventDefault());
+ button.addEventListener('click',()=>{
+  const target=active?.node||editor;target.focus();
+  if(selection){const s=window.getSelection();s.removeAllRanges();s.addRange(selection);}
+  const cmd=button.dataset.command;
+  if(['left','center','right','justify'].includes(cmd)){
+   if(active){active.node.style.textAlign=cmd;active.node.dataset.alignExplicit='true';}
+   else{document.execCommand({left:'justifyLeft',center:'justifyCenter',right:'justifyRight',justify:'justifyFull'}[cmd]);for(const node of styleTargets())node.dataset.alignExplicit='true';}
+  }
+  if(cmd==='break')document.execCommand('insertLineBreak');
+  if(cmd==='bold')document.execCommand('bold');
+  if(['heading','subheading','bullet','number','clear'].includes(cmd)&&active){
+   syncPreview();const items=blocks(),item=items[active.index];
+   if(item.type==='number'&&['heading','subheading'].includes(cmd)){
+    const prefix=`${item.number||1}. `;item.text=prefix+item.text;item.runs.unshift({text:prefix,bold:false});
+   }
+   item.type={heading:'heading',subheading:'subheading',bullet:'bullet',number:'number',clear:'body'}[cmd];
+   if(cmd==='clear'){item.runs.forEach(run=>{run.bold=false;delete run.color;delete run.href;});delete item.font_size;delete item.color;}
+   restore(items);const node=active.node;active=null;node.remove();markChanged();publish();return;
+  }
+  if(!active){
+   if(cmd==='heading'||cmd==='subheading'){
+    document.execCommand('formatBlock',false,cmd==='heading'?'h1':'h2');
+    if(editor.querySelector('h1 ol,h2 ol,ol h1,ol h2'))restore(blocks());
+   }
+   if(cmd==='bullet')document.execCommand('insertUnorderedList');
+   if(cmd==='number')document.execCommand('insertOrderedList');
+   if(cmd==='clear'){
+    document.execCommand('removeFormat');document.execCommand('unlink');const s=window.getSelection();let node=s.anchorNode?.parentElement;
+    while(node&&node!==editor&&!['UL','OL'].includes(node.tagName))node=node.parentElement;
+    if(node&&node!==editor)document.execCommand(node.tagName==='UL'?'insertUnorderedList':'insertOrderedList');
+    document.execCommand('formatBlock',false,'p');
+    for(const node of styleTargets()){delete node.dataset.fontSize;delete node.dataset.textColor;node.style.fontSize='';node.style.color='';}
+   }
+  }
+  if(active)syncPreview();else markChanged();clearTimeout(timer);publish();
+ });
+});
+editor.addEventListener('paste',event=>{
+ event.preventDefault();const text=event.clipboardData.getData('text/plain'),holder=document.createElement('div');
+ let list=null;
+ for(const line of text.split(/\r?\n/)){
+  const bullet=line.match(/^\s*[-•]\s+(.*)$/),number=line.match(/^\s*(\d+)\.\s+(.*)$/);
+  if(bullet||number){
+   const type=bullet?'UL':'OL';if(!list||list.tagName!==type){list=document.createElement(type);if(number)list.start=Number(number[1]);holder.appendChild(list);}
+   const li=document.createElement('li');li.textContent=bullet?bullet[1]:number[2];list.appendChild(li);
+  }else{list=null;const para=document.createElement('p');para.textContent=line||'\u00a0';holder.appendChild(para);}
+ }document.execCommand('insertHTML',false,holder.innerHTML);persist();
+});
+editor.addEventListener('keydown',event=>{
+ if(event.key==='Enter'&&event.shiftKey){event.preventDefault();document.execCommand('insertLineBreak');persist();}
+});
+document.getElementById('generate').addEventListener('click',()=>{
+ if(active)commitPreview();clearTimeout(timer);request=uuid();publish();
+});
+document.getElementById('refresh-preview').addEventListener('mousedown',event=>event.preventDefault());
+document.getElementById('refresh-preview').addEventListener('click',()=>{
+ if(active)commitPreview();clearTimeout(timer);refreshRequest=uuid();publish();
+});
+window.addEventListener('message',event=>{
+ if(event.source!==window.parent||event.data.type!=='streamlit:render')return;
+ const args=event.data.args;
+ const changed=defaultAlign!==(args.default_align||'justify');defaultAlign=args.default_align||'justify';
+ if(initialized&&changed&&!active)restore(blocks());
+ autoPreview=args.auto_preview!==false;
+ window.uploadedSlots=args.uploaded_slots||[];
+ if(!initialized){
+  const style=document.createElement('style');style.textContent=`@font-face{font-family:Article;src:url(data:font/ttf;base64,${args.font})}`;
+  document.head.appendChild(style);restore(args.initial);revision=args.initial_revision||'initial';initialized=true;window.initialToken=args.initial_token;
+ }
+ if(args.initial_token!==window.initialToken){restore(args.initial);revision=args.initial_revision||'initial';window.initialToken=args.initial_token;selection=null;}
+ if(args.preview_revision===revision&&!args.preview_stale){
+  preview.classList.remove('pending');
+  renderPages(args.preview||[]);lastContext=args.context;
+  document.getElementById('status').textContent=args.preview_error?'Preview needs an edit':`Live PDF · ${(args.preview||[]).length} pages · ${autoPreview?'edits update automatically':'manual refresh'}`;
+  const error=document.getElementById('error');error.textContent=args.preview_error||'';error.style.display=args.preview_error?'block':'none';
+ }
+ else if(!autoPreview){preview.classList.add('pending');document.getElementById('status').textContent='Preview out of date — click REFRESH PREVIEW';}
+ send('streamlit:setFrameHeight',{height:Math.max(910,document.body.scrollHeight+8)});
+});
+send('streamlit:componentReady',{apiVersion:1});send('streamlit:setFrameHeight',{height:910});
+</script></body></html>
