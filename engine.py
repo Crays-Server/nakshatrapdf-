@@ -5,7 +5,7 @@ from zipfile import ZipFile,ZIP_DEFLATED
 from dataclasses import dataclass
 import json,re,hashlib
 import fitz
-from PIL import Image,ImageDraw
+from PIL import Image,ImageChops,ImageDraw
 import render_support as support
 text=support.text
 ROOT=Path(__file__).resolve().parent
@@ -69,16 +69,20 @@ class Result:
  @property
  def page_count(self):return len(self.labels)
 
-def frame(doc,labels,label):
+def frame(doc,labels,label,watermark=False):
  page=doc.new_page(width=612,height=792);labels.append(label)
+ if watermark:
+  point=fitz.Point(153.57,581.18)
+  page.insert_text(point,'Om Tamil Calendar',fontname='tiro',fontsize=60.4,color=(0,0,0),fill_opacity=.1,morph=(point,fitz.Matrix(45)))
  for inset,width in ((24,1.2),(27,.5),(30,1.2)):page.draw_rect(fitz.Rect(inset,inset,612-inset,792-inset),color=(.22,.22,.22),width=width)
  return page
 
 def picture(page,path,rect,quality=78):
+ if Path(path)==ASSET/'back.jpg':
+  page.insert_image(rect,filename=str(path),keep_proportion=False)
+  return
  with Image.open(path)as im:
   rgba=im.convert('RGBA');im=Image.new('RGB',rgba.size,'white');mask=rgba.getchannel('A');
-  if Path(path).parent.name=='lords':
-   mask=Image.new('L',rgba.size);ImageDraw.Draw(mask).ellipse((0,0,rgba.width-1,rgba.height-1),fill=255)
   im.paste(rgba,mask=mask);im.thumbnail((900,1100));out=BytesIO();im.save(out,format='JPEG',quality=quality,optimize=True)
  page.insert_image(rect,stream=out.getvalue(),keep_proportion=True)
 
@@ -90,7 +94,7 @@ def compact(doc,limit):
  if len(original)<=limit:return original
  for side,quality in [(850,74),(700,62),(580,50),(460,38),(360,25)]:
   with fitz.open(stream=original,filetype='pdf')as candidate:
-   protected={im['xref'] for page in candidate for im in page.get_image_info(xrefs=True) if abs(im['bbox'][1]-640)<2 and abs(im['bbox'][3]-745)<8}
+   protected={im['xref'] for page in candidate for im in page.get_image_info(xrefs=True) if (abs(im['bbox'][1]-640)<2 and abs(im['bbox'][3]-745)<8) or (page.number==len(candidate)-1 and all(abs(a-b)<1 for a,b in zip(im['bbox'],(30,31,582,765))))}
    for xref in {im[0]for page in candidate for im in page.get_images()}-protected:
     data=candidate.extract_image(xref)
     with Image.open(BytesIO(data['image']))as image:
@@ -102,6 +106,7 @@ def compact(doc,limit):
 
 def generate(raw,key='all_27',options=None,cover_photo=None):
  options=options or {};output=BY_KEY[key];found,prefix=sections(raw)
+ watermark=bool(options.get('watermark',False) and len(output.indices)>1)
  missing=[NAMES[i]for i in output.indices if i not in found or len(found[i])<2]
  if missing:raise ValueError('Missing heading or article: '+', '.join(missing))
  for value in options.get('links',DEFAULT_LINKS).values():support.valid_link(value)
@@ -115,7 +120,7 @@ def generate(raw,key='all_27',options=None,cover_photo=None):
   else:picture(page,ASSET/'cover.jpg',fitz.Rect(31,31,581,761))
   uri(page,(31,31,581,761),'banner',options)
   for star in output.indices:
-   page=frame(doc,labels,NAMES[star]);y=72
+   page=frame(doc,labels,NAMES[star],watermark);y=72
    picture(page,ASSET/'lords'/f'{star+1:02}.png',fitz.Rect(234,y,378,y+143));y+=155
    for j,block in enumerate(found[star]):
     block=dict(block)
@@ -125,20 +130,20 @@ def generate(raw,key='all_27',options=None,cover_photo=None):
     if j>0:block['font_size']=block.get('font_size')or options.get('font_size',20)
     story,size,leading,align,color=support.story_for(block,options,role)
     _,bounds=story.place(fitz.Rect(72,0,540,100000));height=bounds[3];story.reset()
-    if role=='subheading'and y+height+leading>690:page=frame(doc,labels,NAMES[star]+' continued');y=72
+    if role=='subheading'and y+height+leading>690:page=frame(doc,labels,NAMES[star]+' continued',watermark);y=72
     while True:
      more,filled=story.place(fitz.Rect(72,y,540,690))
      if filled[3]<=y+.01:
       if y<=72.01:raise ValueError('Text cannot fit; reduce size or split a long word.')
-      page=frame(doc,labels,NAMES[star]+' continued');y=72;continue
+      page=frame(doc,labels,NAMES[star]+' continued',watermark);y=72;continue
      support.draw_block(page,story,options)
      placements.append({'page':len(doc)-1,'source_index':block['source_index'],'type':block['type'],'rect':[72,y,540,min(filled[3],690)],'font_size':size,'line_height':leading,'align':align,'color':color})
      y=filled[3]
      if not more:break
-     page=frame(doc,labels,NAMES[star]+' continued');y=72
+     page=frame(doc,labels,NAMES[star]+' continued',watermark);y=72
     y+=10
   # The contact banner is always the final content element before the back.
-  if y>625:page=frame(doc,labels,'Contact');y=72
+  if y>625:page=frame(doc,labels,'Contact',watermark);y=72
   phone_rect=fitz.Rect(45,640,570,745)
   picture(page,ASSET/'phone.jpg',phone_rect);uri(page,phone_rect,'contact',options)
   page=frame(doc,labels,'Back cover');picture(page,ASSET/'back.jpg',fitz.Rect(30,31,582,765))

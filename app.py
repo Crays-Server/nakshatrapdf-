@@ -51,6 +51,7 @@ def main():
   preview_key=st.selectbox('Preview output',[o.key for o in engine.OUTPUTS],index=36,format_func=lambda k:engine.BY_KEY[k].label,key='preview_output')
   st.caption(f'Preview limit: {engine.BY_KEY[preview_key].limit//1000} KB')
   font_size=st.number_input('Default text size (pt)',8.,60.,20.,.5)
+  watermark=st.checkbox('Add watermark (groups and full only)',value=False,help='Adds the reference-style diagonal watermark to grouped and complete PDFs. Single-nakshatra PDFs stay unwatermarked.')
   default_align='justify'
   line_height=st.slider('Line spacing',1.05,1.8,1.25,.05)
   with st.expander('Front cover movement'):
@@ -59,7 +60,7 @@ def main():
    enabled=st.checkbox('Enable PDF links',value=True)
    links={key:st.text_input(label,value=value,key='link_'+key)for key,label,value in [('banner','Banner link',engine.DEFAULT_LINKS['banner']),('app','Android app',engine.DEFAULT_LINKS['app']),('contact','Phone banner / contact',engine.DEFAULT_LINKS['contact']),('mail','Email',engine.DEFAULT_LINKS['mail'])]}
   st.caption('Lord images, phone banner and back cover are fixed. No replacement uploads are shown for them.')
- options={'default_align':default_align,'font_size':font_size,'line_height':line_height,'cover_crop':crop,'links':links,'links_enabled':enabled}
+ options={'default_align':default_align,'font_size':font_size,'line_height':line_height,'watermark':watermark,'cover_crop':crop,'links':links,'links_enabled':enabled}
  article=ss['article'];revision=ss['revision']
  try:
   found,_=engine.sections(article);missing=[engine.NAMES[i]for i in range(27)if i not in found or len(found[i])<2]
@@ -67,7 +68,7 @@ def main():
   if missing:
    with st.expander('Missing sections / required heading order'):st.write(', '.join(missing));st.code('\n'.join(engine.NAMES))
  except Exception as error:st.error(str(error));missing=engine.NAMES
- artwork_version=tuple((p.name,p.stat().st_mtime_ns,p.stat().st_size)for p in sorted((engine.ASSET/'lords').glob('*.png')))
+ artwork_version=tuple((p.name,p.stat().st_mtime_ns,p.stat().st_size)for p in sorted(list((engine.ASSET/'lords').glob('*.png'))+list(engine.ASSET.glob('*.jpg'))))
  signature=hashlib.sha256(repr((artwork_version,article,options,hashlib.sha256(cover_data).hexdigest()if cover_data else '')).encode()).hexdigest()
  if signature!=ss.get('master_signature'):
   ss['results']={};ss.pop('download_data',None);ss['master_signature']=signature

@@ -30,6 +30,8 @@ python -m streamlit run app.py --server.port 8506
    individual tick boxes to choose downloads. Prepare selected downloads shows
    progress and a size/page report. One selection downloads a PDF; several
    download a ZIP containing only those selected PDFs.
+6. Optionally enable the diagonal reference watermark for grouped and complete
+   PDFs. Individual nakshatra PDFs remain unwatermarked.
 
 The editor supports bold, paragraph/subheading formatting, colors, font sizes,
 manual line breaks, alignment, selected-text links and direct PDF preview edits.
@@ -45,6 +47,8 @@ are shared; they are not independent overrides for that output.
   and red centered heading. Content continues as needed inside the border.
 - The fixed phone banner is the final content element. If necessary it receives
   a contact page. The fixed back cover is always the last page.
+- The optional diagonal “Om Tamil Calendar” watermark is applied behind content
+  pages in group/full PDFs only; it is off by default and never added to singles.
 - The supplied artwork is used as the default cover. A front upload replaces
   that large cover artwork. The fixed back cover and phone banner never change.
 - Optional link controls cover the front/banner, Android app, contact and email.
@@ -65,7 +69,7 @@ asset/lords/01..27.png  fixed lord images
 asset/font/*.ttf        supplied complete Tamil fonts
 asset/cover.jpg         default front artwork
 asset/phone.jpg         fixed phone banner
-asset/back.jpg          fixed back cover
+asset/back.jpg          supplied compressed fixed back cover
 ```
 
 Deploy with repository root `app.py` as the entry point and include all runtime
@@ -90,3 +94,9 @@ preview controls.
 
 Download delivery uses a browser Blob, avoiding temporary media URLs. The default
 text alignment is Justify; Left/Center/Right/Justify controls are available in the editor toolbar for individual paragraphs. Explicit paragraph alignment overrides the default.
+
+The watermark toggle affects only grouped and all-27 content pages; singles,
+front covers and back covers remain unwatermarked. Lord-image transparency is
+preserved on white. The supplied replacement back cover is encoded once for
+the size budget and excluded from subsequent PDF image recompression. Asset
+changes invalidate both preview and download caches.
